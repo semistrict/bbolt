@@ -144,8 +144,7 @@ func benchFunc(cmd *cobra.Command, options *benchOptions) error {
 	// Create database.
 	dbOptions := *bolt.DefaultOptions
 	dbOptions.PageSize = options.pageSize
-	dbOptions.InitialMmapSize = options.initialMmapSize
-	db, err := bolt.Open(options.path, 0600, &dbOptions)
+	db, err := OpenDB(options.path, 0600, &dbOptions)
 	if err != nil {
 		return err
 	}

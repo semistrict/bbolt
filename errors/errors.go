@@ -72,6 +72,9 @@ var (
 	// ErrMaxSizeReached is returned when the configured maximum size of the data file is reached.
 	ErrMaxSizeReached = errors.New("database reached maximum size")
 
+	// ErrFileSizeTooSmall is returned when the data file is too small to contain both meta pages.
+	ErrFileSizeTooSmall = errors.New("file size too small")
+
 	// ErrIncompatibleValue is returned when trying to create or delete a bucket
 	// on an existing non-bucket key or when trying to create or delete a
 	// non-bucket key on an existing bucket key.

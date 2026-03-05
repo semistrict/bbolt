@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -389,44 +388,6 @@ func (tx *Tx) Copy(w io.Writer) error {
 // WriteTo writes the entire database to a writer.
 // If err == nil then exactly tx.Size() bytes will be written into the writer.
 func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
-	var f *os.File
-	// There is a risk that between the time a read-only transaction
-	// is created and the time the file is actually opened, the
-	// underlying db file at tx.db.path may have been replaced
-	// (e.g. via rename). In that case, opening the file again would
-	// unexpectedly point to a different file, rather than the one
-	// the transaction was based on.
-	//
-	// To overcome this, we reuse the already opened file handle when
-	// WriteFlag not set. When the WriteFlag is set, we reopen the file
-	// but verify that it still refers to the same underlying file
-	// (by device and inode). If it does not, we fall back to
-	// reusing the existing already opened file handle.
-	if tx.WriteFlag != 0 {
-		// Attempt to open reader with WriteFlag
-		f, err = tx.db.openFile(tx.db.path, os.O_RDONLY|tx.WriteFlag, 0)
-		if err != nil {
-			return 0, err
-		}
-
-		if ok, err := sameFile(tx.db.file, f); !ok {
-			lg := tx.db.Logger()
-			if cerr := f.Close(); cerr != nil {
-				lg.Errorf("failed to close the file (%s): %v", tx.db.path, cerr)
-			}
-			lg.Warningf("The underlying file has changed, so reuse the already opened file (%s): %v", tx.db.path, err)
-			f = tx.db.file
-		} else {
-			defer func() {
-				if cerr := f.Close(); err == nil {
-					err = cerr
-				}
-			}()
-		}
-	} else {
-		f = tx.db.file
-	}
-
 	// Generate a meta page. We use the same page data for both meta pages.
 	buf := make([]byte, tx.db.pageSize)
 	page := (*common.Page)(unsafe.Pointer(&buf[0]))
@@ -452,39 +413,36 @@ func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
 		return n, fmt.Errorf("meta 1 copy: %s", err)
 	}
 
-	// Copy data pages using a SectionReader to avoid affecting f's offset.
+	// Copy data pages by reading from the data backend.
 	dataOffset := int64(tx.db.pageSize * 2)
 	dataSize := tx.Size() - dataOffset
-	sr := io.NewSectionReader(f, dataOffset, dataSize)
-
-	// Copy data pages.
-	wn, err := io.CopyN(w, sr, dataSize)
-	n += wn
-	if err != nil {
-		return n, err
+	chunkSize := 4096
+	for off := dataOffset; off < dataOffset+dataSize; {
+		remaining := int(dataOffset + dataSize - off)
+		readLen := chunkSize
+		if readLen > remaining {
+			readLen = remaining
+		}
+		b, readErr := tx.db.data.ReadAt(off, readLen)
+		if readErr != nil {
+			return n, readErr
+		}
+		nn, err = w.Write(b)
+		n += int64(nn)
+		if err != nil {
+			return n, err
+		}
+		off += int64(nn)
 	}
 
 	return n, nil
-}
-
-func sameFile(f1, f2 *os.File) (bool, error) {
-	fi1, err := f1.Stat()
-	if err != nil {
-		return false, fmt.Errorf("failed to get fileInfo of the first file (%s): %w", f1.Name(), err)
-	}
-	fi2, err := f2.Stat()
-	if err != nil {
-		return false, fmt.Errorf("failed to get fileInfo of the second file (%s): %w", f2.Name(), err)
-	}
-
-	return os.SameFile(fi1, fi2), nil
 }
 
 // CopyFile copies the entire database to file at the given path.
 // A reader transaction is maintained during the copy so it is safe to continue
 // using the database while a copy is in progress.
 func (tx *Tx) CopyFile(path string, mode os.FileMode) error {
-	f, err := tx.db.openFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
@@ -542,7 +500,7 @@ func (tx *Tx) write() error {
 			}
 			buf := common.UnsafeByteSlice(unsafe.Pointer(p), written, 0, int(sz))
 
-			if _, err := tx.db.ops.writeAt(buf, offset); err != nil {
+			if _, err := tx.db.data.WriteAt(buf, offset); err != nil {
 				lg.Errorf("writeAt failed, offset: %d: %w", offset, err)
 				return err
 			}
@@ -562,11 +520,11 @@ func (tx *Tx) write() error {
 		}
 	}
 
-	// Ignore file sync if flag is set on DB.
+	// Sync data pages if flag is set on DB.
 	if !tx.db.NoSync || common.IgnoreNoSync {
 		// gofail: var beforeSyncDataPages struct{}
-		if err := fdatasync(tx.db); err != nil {
-			lg.Errorf("[GOOS: %s, GOARCH: %s] fdatasync failed: %w", runtime.GOOS, runtime.GOARCH, err)
+		if err := tx.db.data.Sync(); err != nil {
+			lg.Errorf("sync failed: %v", err)
 			return err
 		}
 	}
@@ -602,9 +560,9 @@ func (tx *Tx) writeMeta() error {
 	p := tx.db.pageInBuffer(buf, 0)
 	tx.meta.Write(p)
 
-	// Write the meta page to file.
+	// Write the meta page to the data backend.
 	tx.db.metalock.Lock()
-	if _, err := tx.db.ops.writeAt(buf, int64(p.Id())*int64(tx.db.pageSize)); err != nil {
+	if _, err := tx.db.data.WriteAt(buf, int64(p.Id())*int64(tx.db.pageSize)); err != nil {
 		tx.db.metalock.Unlock()
 		lg.Errorf("writeAt failed, pgid: %d, pageSize: %d, error: %v", p.Id(), tx.db.pageSize, err)
 		return err
@@ -612,8 +570,8 @@ func (tx *Tx) writeMeta() error {
 	tx.db.metalock.Unlock()
 	if !tx.db.NoSync || common.IgnoreNoSync {
 		// gofail: var beforeSyncMetaPage struct{}
-		if err := fdatasync(tx.db); err != nil {
-			lg.Errorf("[GOOS: %s, GOARCH: %s] fdatasync failed: %w", runtime.GOOS, runtime.GOARCH, err)
+		if err := tx.db.data.Sync(); err != nil {
+			lg.Errorf("sync failed: %v", err)
 			return err
 		}
 	}

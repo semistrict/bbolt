@@ -28,7 +28,7 @@ func inspectFunc(srcDBPath string) error {
 		return err
 	}
 
-	db, err := bolt.Open(srcDBPath, 0600, &bolt.Options{ReadOnly: true})
+	db, err := OpenDB(srcDBPath, 0600, &bolt.Options{ReadOnly: true})
 	if err != nil {
 		return err
 	}

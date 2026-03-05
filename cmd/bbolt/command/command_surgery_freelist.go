@@ -97,7 +97,7 @@ func surgeryFreelistRebuildFunc(srcDBPath string, cfg surgeryBaseOptions) error 
 	}
 
 	// bboltDB automatically reconstruct & sync freelist in write mode.
-	db, err := bolt.Open(cfg.outputDBFilePath, fi.Mode(), &bolt.Options{NoFreelistSync: false})
+	db, err := OpenDB(cfg.outputDBFilePath, fi.Mode(), &bolt.Options{NoFreelistSync: false})
 	if err != nil {
 		return fmt.Errorf("[freelist rebuild] open db file failed: %w", err)
 	}

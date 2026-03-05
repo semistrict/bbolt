@@ -66,7 +66,7 @@ func getFunc(cmd *cobra.Command, path string, buckets []string, key []byte, opts
 	}
 
 	// open the database
-	db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true})
+	db, err := OpenDB(path, 0600, &bolt.Options{ReadOnly: true})
 	if err != nil {
 		return err
 	}

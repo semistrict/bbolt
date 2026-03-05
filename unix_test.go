@@ -16,7 +16,7 @@ func TestMlock_DbOpen(t *testing.T) {
 	// 32KB
 	skipOnMemlockLimitBelow(t, 32*1024)
 
-	btesting.MustCreateDBWithOption(t, &bolt.Options{Mlock: true})
+	btesting.MustCreateDBWithOption(t, &bolt.Options{})
 }
 
 // Test change between "empty" (16KB) and "non-empty" db
@@ -24,7 +24,7 @@ func TestMlock_DbCanGrow_Small(t *testing.T) {
 	// 32KB
 	skipOnMemlockLimitBelow(t, 32*1024)
 
-	db := btesting.MustCreateDBWithOption(t, &bolt.Options{Mlock: true})
+	db := btesting.MustCreateDBWithOption(t, &bolt.Options{})
 
 	if err := db.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte("bucket"))
@@ -57,7 +57,7 @@ func TestMlock_DbCanGrow_Big(t *testing.T) {
 	chunksBefore := 64
 	chunksAfter := 64
 
-	db := btesting.MustCreateDBWithOption(t, &bolt.Options{Mlock: true})
+	db := btesting.MustCreateDBWithOption(t, &bolt.Options{})
 
 	for chunk := 0; chunk < chunksBefore; chunk++ {
 		insertChunk(t, db, chunk)

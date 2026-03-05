@@ -877,7 +877,7 @@ func TestCursor_QuickCheck_BucketsOnly_Reverse(t *testing.T) {
 
 func ExampleCursor() {
 	// Open the database.
-	db, err := bolt.Open(tempfile(), 0600, nil)
+	db, err := openDB(tempfile(), 0600, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -931,7 +931,7 @@ func ExampleCursor() {
 
 func ExampleCursor_reverse() {
 	// Open the database.
-	db, err := bolt.Open(tempfile(), 0600, nil)
+	db, err := openDB(tempfile(), 0600, nil)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -1,9 +1,29 @@
 package bbolt_test
 
 import (
+	"os"
+
 	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/bbolt/internal/common"
 )
+
+// openDB is a test helper that opens a bolt database from a file path.
+func openDB(path string, mode os.FileMode, opts *bolt.Options) (*bolt.DB, error) {
+	readOnly := false
+	if opts != nil {
+		readOnly = opts.ReadOnly
+	}
+	data, err := bolt.OpenFileData(path, mode, readOnly)
+	if err != nil {
+		return nil, err
+	}
+	db, err := bolt.Open(data, opts)
+	if err != nil {
+		data.Close()
+		return nil, err
+	}
+	return db, nil
+}
 
 // `dumpBucket` dumps all the data, including both key/value data
 // and child buckets, from the source bucket into the target db file.
@@ -12,7 +32,7 @@ func dumpBucket(srcBucketName []byte, srcBucket *bolt.Bucket, dstFilename string
 	common.Assert(srcBucket != nil, "the source bucket can't be nil")
 	common.Assert(len(dstFilename) != 0, "the target file path can't be empty")
 
-	dstDB, err := bolt.Open(dstFilename, 0600, nil)
+	dstDB, err := openDB(dstFilename, 0600, nil)
 	if err != nil {
 		return err
 	}

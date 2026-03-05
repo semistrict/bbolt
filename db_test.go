@@ -51,7 +51,7 @@ func TestOpen(t *testing.T) {
 	path := tempfile()
 	defer os.RemoveAll(path)
 
-	db, err := bolt.Open(path, 0600, nil)
+	db, err := openDB(path, 0600, nil)
 	if err != nil {
 		t.Fatal(err)
 	} else if db == nil {
@@ -87,7 +87,7 @@ func TestOpen_MultipleGoroutines(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				db, err := bolt.Open(path, 0600, nil)
+				db, err := openDB(path, 0600, nil)
 				if err != nil {
 					errCh <- err
 					return
@@ -110,7 +110,7 @@ func TestOpen_MultipleGoroutines(t *testing.T) {
 
 // Ensure that opening a database with a blank path returns an error.
 func TestOpen_ErrPathRequired(t *testing.T) {
-	_, err := bolt.Open("", 0600, nil)
+	_, err := openDB("", 0600, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -118,7 +118,7 @@ func TestOpen_ErrPathRequired(t *testing.T) {
 
 // Ensure that opening a database with a bad path returns an error.
 func TestOpen_ErrNotExists(t *testing.T) {
-	_, err := bolt.Open(filepath.Join(tempfile(), "bad-path"), 0600, nil)
+	_, err := openDB(filepath.Join(tempfile(), "bad-path"), 0600, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -140,7 +140,7 @@ func TestOpen_ErrInvalid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := bolt.Open(path, 0600, nil); err != berrors.ErrInvalid {
+	if _, err := openDB(path, 0600, nil); err != berrors.ErrInvalid {
 		t.Fatalf("unexpected error: %s", err)
 	}
 }
@@ -176,7 +176,7 @@ func TestOpen_ErrVersionMismatch(t *testing.T) {
 	}
 
 	// Reopen data file.
-	if _, err := bolt.Open(path, 0600, nil); err != berrors.ErrVersionMismatch {
+	if _, err := openDB(path, 0600, nil); err != berrors.ErrVersionMismatch {
 		t.Fatalf("unexpected error: %s", err)
 	}
 }
@@ -212,7 +212,7 @@ func TestOpen_ErrChecksum(t *testing.T) {
 	}
 
 	// Reopen data file.
-	if _, err := bolt.Open(path, 0600, nil); err != berrors.ErrChecksum {
+	if _, err := openDB(path, 0600, nil); err != berrors.ErrChecksum {
 		t.Fatalf("unexpected error: %s", err)
 	}
 }
@@ -368,7 +368,7 @@ func TestOpen_Size_Large(t *testing.T) {
 	}
 
 	// Reopen database, update, and check size again.
-	db0, err := bolt.Open(path, 0600, nil)
+	db0, err := openDB(path, 0600, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +398,7 @@ func TestOpen_Check(t *testing.T) {
 	path := tempfile()
 	defer os.RemoveAll(path)
 
-	db, err := bolt.Open(path, 0600, nil)
+	db, err := openDB(path, 0600, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestOpen_Check(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err = bolt.Open(path, 0600, nil)
+	db, err = openDB(path, 0600, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +431,7 @@ func TestOpen_FileTooSmall(t *testing.T) {
 	path := tempfile()
 	defer os.RemoveAll(path)
 
-	db, err := bolt.Open(path, 0600, nil)
+	db, err := openDB(path, 0600, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +445,7 @@ func TestOpen_FileTooSmall(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = bolt.Open(path, 0600, nil)
+	_, err = openDB(path, 0600, nil)
 	if err == nil || !strings.Contains(err.Error(), "file size too small") {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -475,10 +475,9 @@ func TestDB_Open_InitialMmapSize(t *testing.T) {
 			path := tempfile()
 			defer os.Remove(path)
 
-			initMmapSize := 1 << 30  // 1GB
 			testWriteSize := 1 << 27 // 134MB
 
-			db, err := bolt.Open(path, 0600, &bolt.Options{InitialMmapSize: initMmapSize})
+			db, err := openDB(path, 0600, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -562,7 +561,7 @@ func TestDB_Open_ReadOnly(t *testing.T) {
 
 	f := db.Path()
 	o := &bolt.Options{ReadOnly: true}
-	readOnlyDB, err := bolt.Open(f, 0600, o)
+	readOnlyDB, err := openDB(f, 0600, o)
 	if err != nil {
 		panic(err)
 	}
@@ -594,7 +593,7 @@ func TestDB_Open_ReadOnly(t *testing.T) {
 
 func TestDB_Open_ReadOnly_NoCreate(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "db")
-	_, err := bolt.Open(f, 0600, &bolt.Options{ReadOnly: true})
+	_, err := openDB(f, 0600, &bolt.Options{ReadOnly: true})
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
@@ -881,7 +880,7 @@ func TestDB_WriteTo_and_Overwrite(t *testing.T) {
 			require.NoError(t, rtx.Rollback())
 
 			t.Logf("Read all the data from the backup db after calling WriteTo")
-			newDB, err := bolt.Open(f, 0600, &bolt.Options{
+			newDB, err := openDB(f, 0600, &bolt.Options{
 				ReadOnly: true,
 			})
 			require.NoError(t, err)
@@ -1488,8 +1487,7 @@ func TestDB_BatchTime(t *testing.T) {
 	}
 }
 
-// TestDBUnmap verifes that `dataref`, `data` and `datasz` must be reset
-// to zero values respectively after unmapping the db.
+// TestDBUnmap verifies that `data` is reset to nil after closing the db.
 func TestDBUnmap(t *testing.T) {
 	db := btesting.MustCreateDB(t)
 
@@ -1499,12 +1497,8 @@ func TestDBUnmap(t *testing.T) {
 	// Error: copylocks: call of reflect.ValueOf copies lock value: go.etcd.io/bbolt.DB contains sync.Once contains sync.Mutex (govet)
 	//nolint:govet
 	v := reflect.ValueOf(*db.DB)
-	dataref := v.FieldByName("dataref")
 	data := v.FieldByName("data")
-	datasz := v.FieldByName("datasz")
-	assert.True(t, dataref.IsNil())
 	assert.True(t, data.IsNil())
-	assert.True(t, datasz.IsZero())
 
 	// Set db.DB to nil to prevent MustCheck from panicking.
 	db.DB = nil
@@ -1569,10 +1563,8 @@ func TestDB_MaxSizeNotExceeded(t *testing.T) {
 
 			path := db.Path()
 
-			// The data file should be 4 MiB now (expanded once from zero).
-			// It should have space for roughly 16 more entries before trying to grow
-			// Keep inserting until grow is required
-			err := fillDBWithKeys(db, 100)
+			// Keep inserting until the DB tries to grow past MaxSize.
+			err := fillDBWithKeys(db, 5000)
 			assert.ErrorIs(t, err, berrors.ErrMaxSizeReached)
 
 			newSz := fileSize(path)
@@ -1642,10 +1634,9 @@ func TestDB_MaxSizeExceededCanOpenWithHighMmap(t *testing.T) {
 	// Now try to re-open the database with an extremely small max size
 	t.Logf("Reopening bbolt DB at: %s", path)
 	db, err = btesting.OpenDBWithOption(t, path, &bolt.Options{
-		MaxSize:         1,
-		InitialMmapSize: int(minimumSizeForTest) * 2,
+		MaxSize: 1,
 	})
-	assert.NoError(t, err, "Should be able to open database bigger than MaxSize when InitialMmapSize set high")
+	assert.NoError(t, err, "Should be able to open database bigger than MaxSize")
 
 	err = db.Close()
 	require.NoError(t, err, "Closing the re-opened database should succeed")
@@ -1677,15 +1668,14 @@ func TestDB_MaxSizeExceededDoesNotGrow(t *testing.T) {
 	// an initial mmap size to be greater than the actual file size, forcing an illegal grow on open
 	t.Logf("Reopening bbolt DB at: %s", path)
 	_, err = btesting.OpenDBWithOption(t, path, &bolt.Options{
-		MaxSize:         1,
-		InitialMmapSize: int(newSz) * 2,
+		MaxSize: 1,
 	})
-	assert.Error(t, err, "Opening the DB with InitialMmapSize > MaxSize should cause an error on Windows")
+	assert.Error(t, err, "Opening the DB with MaxSize < file size should cause an error on Windows")
 }
 
 func TestDB_HugeValue(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "db")
-	db, err := bolt.Open(dbPath, 0600, nil)
+	db, err := openDB(dbPath, 0600, nil)
 	require.NoError(t, err)
 	defer func() {
 		require.NoError(t, db.Close())
@@ -1713,7 +1703,7 @@ func TestDB_HugeValue(t *testing.T) {
 
 func ExampleDB_Update() {
 	// Open the database.
-	db, err := bolt.Open(tempfile(), 0600, nil)
+	db, err := openDB(tempfile(), 0600, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1753,7 +1743,7 @@ func ExampleDB_Update() {
 
 func ExampleDB_View() {
 	// Open the database.
-	db, err := bolt.Open(tempfile(), 0600, nil)
+	db, err := openDB(tempfile(), 0600, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1796,7 +1786,7 @@ func ExampleDB_View() {
 
 func ExampleDB_Begin() {
 	// Open the database.
-	db, err := bolt.Open(tempfile(), 0600, nil)
+	db, err := openDB(tempfile(), 0600, nil)
 	if err != nil {
 		log.Fatal(err)
 	}

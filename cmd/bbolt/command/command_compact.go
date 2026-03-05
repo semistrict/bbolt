@@ -63,14 +63,14 @@ func (o *compactOptions) Run(cmd *cobra.Command, srcPath string) (err error) {
 	initialSize := fi.Size()
 
 	// open source database.
-	src, err := bolt.Open(srcPath, 0400, &bolt.Options{ReadOnly: true})
+	src, err := OpenDB(srcPath, 0400, &bolt.Options{ReadOnly: true})
 	if err != nil {
 		return err
 	}
 	defer src.Close()
 
 	// open destination database.
-	dst, err := bolt.Open(o.dstPath, fi.Mode(), &bolt.Options{NoSync: o.dstNoSync})
+	dst, err := OpenDB(o.dstPath, fi.Mode(), &bolt.Options{NoSync: o.dstNoSync})
 	if err != nil {
 		return err
 	}

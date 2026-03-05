@@ -1,6 +1,7 @@
 package bbolt
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -42,7 +43,7 @@ func TestOpenWithPreLoadFreelist(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			db, err := Open(fileName, 0666, &Options{
+			db, err := openPath(fileName, 0666, &Options{
 				ReadOnly:        tc.readonly,
 				PreLoadFreelist: tc.preLoadFreePage,
 			})
@@ -88,7 +89,7 @@ func TestMethodPage(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			db, err := Open(fileName, 0666, &Options{
+			db, err := openPath(fileName, 0666, &Options{
 				ReadOnly:        tc.readonly,
 				PreLoadFreelist: tc.preLoadFreePage,
 			})
@@ -112,9 +113,26 @@ func TestMethodPage(t *testing.T) {
 	}
 }
 
+func openPath(path string, mode os.FileMode, opts *Options) (*DB, error) {
+	readOnly := false
+	if opts != nil {
+		readOnly = opts.ReadOnly
+	}
+	data, err := OpenFileData(path, mode, readOnly)
+	if err != nil {
+		return nil, err
+	}
+	db, err := Open(data, opts)
+	if err != nil {
+		data.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
 func prepareData(t *testing.T) (string, error) {
 	fileName := filepath.Join(t.TempDir(), "db")
-	db, err := Open(fileName, 0666, nil)
+	db, err := openPath(fileName, 0666, nil)
 	if err != nil {
 		return "", err
 	}

@@ -1,5 +1,13 @@
-bbolt
+bbolt (storage-abstraction fork)
 =====
+
+> **Fork note:** This fork replaces bbolt's direct mmap usage with a `Data`
+> interface that abstracts storage I/O. Instead of `Open(path, mode, options)`,
+> callers provide a `Data` implementation to `Open(data, options)`. The `Data`
+> interface requires `ReadAt`, `WriteAt`, `Size`, `Grow`, and `Sync` methods,
+> making it possible to back bbolt with block devices or other non-filesystem
+> storage. A `FileData` implementation using mmap is included for file-backed
+> databases, and a `MemData` implementation is provided for in-memory use.
 
 [![Go Report Card](https://goreportcard.com/badge/go.etcd.io/bbolt?style=flat-square)](https://goreportcard.com/report/go.etcd.io/bbolt)
 [![Go Reference](https://pkg.go.dev/badge/go.etcd.io/bbolt.svg)](https://pkg.go.dev/go.etcd.io/bbolt)

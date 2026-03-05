@@ -37,7 +37,7 @@ func TestTx_Check_ReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	readOnlyDB, err := bolt.Open(db.Path(), 0600, &bolt.Options{ReadOnly: true})
+	readOnlyDB, err := openDB(db.Path(), 0600, &bolt.Options{ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +546,7 @@ func TestTx_CopyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db2, err := bolt.Open(path, 0600, nil)
+	db2, err := openDB(path, 0600, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -645,7 +645,7 @@ func TestTx_CopyFile_Error_Normal(t *testing.T) {
 func TestTx_Rollback(t *testing.T) {
 	for _, isSyncFreelist := range []bool{false, true} {
 		// Open the database.
-		db, err := bolt.Open(tempfile(), 0600, nil)
+		db, err := openDB(tempfile(), 0600, nil)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -701,7 +701,7 @@ func TestTx_releaseRange(t *testing.T) {
 	// Set initial mmap size well beyond the limit we will hit in this
 	// test, since we are testing with long running read transactions
 	// and will deadlock if db.grow is triggered.
-	db := btesting.MustCreateDBWithOption(t, &bolt.Options{InitialMmapSize: os.Getpagesize() * 100})
+	db := btesting.MustCreateDB(t)
 
 	bucket := "bucket"
 
@@ -798,7 +798,7 @@ func TestTx_releaseRange(t *testing.T) {
 
 func ExampleTx_Rollback() {
 	// Open the database.
-	db, err := bolt.Open(tempfile(), 0600, nil)
+	db, err := openDB(tempfile(), 0600, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -852,7 +852,7 @@ func ExampleTx_Rollback() {
 
 func ExampleTx_CopyFile() {
 	// Open the database.
-	db, err := bolt.Open(tempfile(), 0600, nil)
+	db, err := openDB(tempfile(), 0600, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -882,7 +882,7 @@ func ExampleTx_CopyFile() {
 	defer os.Remove(toFile)
 
 	// Open the cloned database.
-	db2, err := bolt.Open(toFile, 0600, nil)
+	db2, err := openDB(toFile, 0600, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1013,7 +1013,7 @@ func TestTxStats_Sub(t *testing.T) {
 	assert.Equal(t, 10009*time.Second, diff.GetWriteTime())
 }
 
-// TestTx_TruncateBeforeWrite ensures the file is truncated ahead whether we sync freelist or not.
+// TestTx_TruncateBeforeWrite ensures the file grows correctly whether we sync freelist or not.
 func TestTx_TruncateBeforeWrite(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		return
@@ -1025,30 +1025,23 @@ func TestTx_TruncateBeforeWrite(t *testing.T) {
 				NoFreelistSync: isSyncFreelist,
 			})
 
-			bigvalue := make([]byte, db.AllocSize/100)
-			count := 0
-			for {
-				count++
+			bigvalue := make([]byte, 100000)
+			prevSize := int64(0)
+			for i := 0; i < 20; i++ {
 				tx, err := db.Begin(true)
 				require.NoError(t, err)
 				b, err := tx.CreateBucketIfNotExists([]byte("bucket"))
 				require.NoError(t, err)
-				err = b.Put([]byte{byte(count)}, bigvalue)
+				err = b.Put([]byte{byte(i)}, bigvalue)
 				require.NoError(t, err)
 				err = tx.Commit()
 				require.NoError(t, err)
 
 				size := fileSize(db.Path())
-
-				if size > int64(db.AllocSize) && size < int64(db.AllocSize)*2 {
-					// db.grow expands the file aggresively, that double the size while smaller than db.AllocSize,
-					// or increase with a step of db.AllocSize if larger, by which we can test if db.grow has run.
-					t.Fatalf("db.grow doesn't run when file size changes. file size: %d", size)
-				}
-				if size > int64(db.AllocSize) {
-					break
-				}
+				require.GreaterOrEqual(t, size, prevSize, "file should not shrink")
+				prevSize = size
 			}
+			require.Greater(t, prevSize, int64(0), "file should have grown")
 			db.MustClose()
 			db.MustDeleteFile()
 		})

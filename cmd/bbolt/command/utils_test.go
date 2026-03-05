@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	bolt "go.etcd.io/bbolt"
+	"go.etcd.io/bbolt/cmd/bbolt/command"
 	"go.etcd.io/bbolt/internal/common"
 	"go.etcd.io/bbolt/internal/guts_cli"
 )
@@ -114,7 +115,7 @@ func fillBucket(b *bolt.Bucket, prefix []byte) error {
 }
 
 func chkdb(path string) ([]byte, error) {
-	db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true})
+	db, err := command.OpenDB(path, 0600, &bolt.Options{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}

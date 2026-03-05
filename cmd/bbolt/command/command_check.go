@@ -39,7 +39,7 @@ func checkFunc(cmd *cobra.Command, dbPath string, cfg checkOptions) error {
 	}
 
 	// Open database.
-	db, err := bolt.Open(dbPath, 0600, &bolt.Options{
+	db, err := OpenDB(dbPath, 0600, &bolt.Options{
 		ReadOnly:        true,
 		PreLoadFreelist: true,
 	})

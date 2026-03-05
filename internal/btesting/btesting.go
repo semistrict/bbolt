@@ -63,8 +63,15 @@ func OpenDBWithOption(t testing.TB, f string, o *bolt.Options) (*DB, error) {
 
 	o.FreelistType = freelistType
 
-	db, err := bolt.Open(f, 0600, o)
+	readOnly := o.ReadOnly
+	data, err := bolt.OpenFileData(f, 0600, readOnly)
 	if err != nil {
+		return nil, err
+	}
+
+	db, err := bolt.Open(data, o)
+	if err != nil {
+		data.Close()
 		return nil, err
 	}
 	resDB := &DB{
@@ -86,14 +93,15 @@ func (db *DB) PostTestCleanup() {
 	}
 }
 
-// Close closes the database but does NOT delete the underlying file.
+// Close closes the database.
 func (db *DB) Close() error {
 	if db.DB != nil {
 		// Log statistics.
 		if *statsFlag {
 			db.PrintStats()
 		}
-		db.t.Logf("Closing bbolt DB at: %s", db.f)
+		t := db.t
+		t.Logf("Closing bbolt DB at: %s", db.f)
 		err := db.DB.Close()
 		if err != nil {
 			return err
@@ -103,12 +111,18 @@ func (db *DB) Close() error {
 	return nil
 }
 
-// MustClose closes the database but does NOT delete the underlying file.
+// MustClose closes the database.
 func (db *DB) MustClose() {
 	err := db.Close()
 	require.NoError(db.t, err)
 }
 
+// Path returns the path to the database file.
+func (db *DB) Path() string {
+	return db.f
+}
+
+// MustDeleteFile deletes the database file.
 func (db *DB) MustDeleteFile() {
 	err := os.Remove(db.Path())
 	require.NoError(db.t, err)
@@ -118,13 +132,18 @@ func (db *DB) SetOptions(o *bolt.Options) {
 	db.o = o
 }
 
-// MustReopen reopen the database. Panic on error.
+// MustReopen reopens the database. Panic on error.
 func (db *DB) MustReopen() {
 	if db.DB != nil {
 		panic("Please call Close() before MustReopen()")
 	}
 	db.t.Logf("Reopening bbolt DB at: %s", db.f)
-	indb, err := bolt.Open(db.Path(), 0600, db.o)
+	data, err := bolt.OpenFileData(db.f, 0600, db.o.ReadOnly)
+	require.NoError(db.t, err)
+	indb, err := bolt.Open(data, db.o)
+	if err != nil {
+		data.Close()
+	}
 	require.NoError(db.t, err)
 	db.DB = indb
 	db.strictModeEnabledDefault()
@@ -142,21 +161,13 @@ func (db *DB) MustCheck() {
 			}
 		}
 
-		// If errors occurred, copy the DB and print the errors.
+		// If errors occurred, print the errors.
 		if len(errors) > 0 {
-			var path = filepath.Join(db.t.TempDir(), "db.backup")
-			err := tx.CopyFile(path, 0600)
-			require.NoError(db.t, err)
-
-			// Print errors.
 			fmt.Print("\n\n")
 			fmt.Printf("consistency check failed (%d errors)\n", len(errors))
 			for _, err := range errors {
 				fmt.Println(err)
 			}
-			fmt.Println("")
-			fmt.Println("db saved to:")
-			fmt.Println(path)
 			fmt.Print("\n\n")
 			os.Exit(-1)
 		}
@@ -187,11 +198,7 @@ func (db *DB) Fill(bucket []byte, numTx int, numKeysPerTx int,
 	return nil
 }
 
-func (db *DB) Path() string {
-	return db.f
-}
-
-// CopyTempFile copies a database to a temporary file.
+// CopyTempFile copies the database to a temporary file for debugging.
 func (db *DB) CopyTempFile() {
 	path := filepath.Join(db.t.TempDir(), "db.copy")
 	err := db.View(func(tx *bolt.Tx) error {

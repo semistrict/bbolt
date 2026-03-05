@@ -3,6 +3,7 @@ package failpoint
 import (
 	crand "crypto/rand"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -17,6 +18,23 @@ import (
 	gofail "go.etcd.io/gofail/runtime"
 )
 
+func openDB(path string, mode os.FileMode, opts *bolt.Options) (*bolt.DB, error) {
+	readOnly := false
+	if opts != nil {
+		readOnly = opts.ReadOnly
+	}
+	data, err := bolt.OpenFileData(path, mode, readOnly)
+	if err != nil {
+		return nil, err
+	}
+	db, err := bolt.Open(data, opts)
+	if err != nil {
+		data.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
 func TestFailpoint_MapFail(t *testing.T) {
 	err := gofail.Enable("mapError", `return("map somehow failed")`)
 	require.NoError(t, err)
@@ -26,7 +44,7 @@ func TestFailpoint_MapFail(t *testing.T) {
 	}()
 
 	f := filepath.Join(t.TempDir(), "db")
-	_, err = bolt.Open(f, 0600, nil)
+	_, err = openDB(f, 0600, nil)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "map somehow failed")
 }
@@ -40,14 +58,14 @@ func TestFailpoint_UnmapFail_DbClose(t *testing.T) {
 
 	err := gofail.Enable("unmapError", `return("unmap somehow failed")`)
 	require.NoError(t, err)
-	_, err = bolt.Open(f, 0600, nil)
+	_, err = openDB(f, 0600, nil)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "unmap somehow failed")
 	//disable the error, and try to reopen the db
 	err = gofail.Disable("unmapError")
 	require.NoError(t, err)
 
-	db, err := bolt.Open(f, 0600, &bolt.Options{Timeout: 30 * time.Second})
+	db, err := openDB(f, 0600, nil)
 	require.NoError(t, err)
 	err = db.Close()
 	require.NoError(t, err)
@@ -58,7 +76,7 @@ func TestFailpoint_mLockFail(t *testing.T) {
 	require.NoError(t, err)
 
 	f := filepath.Join(t.TempDir(), "db")
-	_, err = bolt.Open(f, 0600, &bolt.Options{Mlock: true})
+	_, err = openDB(f, 0600, nil)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "mlock somehow failed")
 
@@ -66,13 +84,12 @@ func TestFailpoint_mLockFail(t *testing.T) {
 	err = gofail.Disable("mlockError")
 	require.NoError(t, err)
 
-	_, err = bolt.Open(f, 0600, &bolt.Options{Mlock: true})
+	_, err = openDB(f, 0600, nil)
 	require.NoError(t, err)
 }
 
 func TestFailpoint_mLockFail_When_remap(t *testing.T) {
 	db := btesting.MustCreateDB(t)
-	db.Mlock = true
 
 	err := gofail.Enable("mlockError", `return("mlock somehow failed in allocate")`)
 	require.NoError(t, err)

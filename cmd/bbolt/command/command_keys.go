@@ -36,7 +36,7 @@ func keysFunc(cmd *cobra.Command, cfg keysOptions, dbPath string, buckets ...str
 		return err
 	}
 	// Open database.
-	db, err := bolt.Open(dbPath, 0600, &bolt.Options{
+	db, err := OpenDB(dbPath, 0600, &bolt.Options{
 		ReadOnly: true,
 	})
 	if err != nil {
