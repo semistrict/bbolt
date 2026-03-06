@@ -32,7 +32,7 @@ type Data interface {
 	// ReadAt returns exactly n bytes starting at the given offset.
 	// It returns an error if off is negative or if off+n exceeds the data size.
 	// The returned slice must not be modified by the caller.
-	ReadAt(off int64, n int) ([]byte, error)
+	ReadAt(off int64, n int) (buf []byte, release func(), err error)
 
 	// WriteAt writes b at the given offset.
 	WriteAt(b []byte, off int64) (n int, err error)
@@ -318,10 +318,11 @@ func (db *DB) getPageSize() (int, error) {
 
 // getPageSizeFromFirstMeta reads the pageSize from the first meta page
 func (db *DB) getPageSizeFromFirstMeta() (int, bool, error) {
-	b, err := db.data.ReadAt(0, 0x1000)
+	b, release, err := db.data.ReadAt(0, 0x1000)
 	if err != nil {
 		return 0, false, err
 	}
+	defer release()
 	if m := db.pageInBuffer(b[:0x1000], 0).Meta(); m.Validate() == nil {
 		return int(m.PageSize()), true, nil
 	}
@@ -348,12 +349,19 @@ func (db *DB) getPageSizeFromSecondMeta() (int, bool, error) {
 		if pos+readSz > dataSz {
 			readSz = dataSz - pos
 		}
-		b, err := db.data.ReadAt(pos, int(readSz))
+		b, release, err := db.data.ReadAt(pos, int(readSz))
 		if err != nil {
 			continue
 		}
-		if m := db.pageInBuffer(b[:readSz], 0).Meta(); m.Validate() == nil {
-			return int(m.PageSize()), true, nil
+		m := db.pageInBuffer(b[:readSz], 0).Meta()
+		valid := m.Validate() == nil
+		var pgSize int
+		if valid {
+			pgSize = int(m.PageSize())
+		}
+		release()
+		if valid {
+			return pgSize, true, nil
 		}
 	}
 
@@ -371,7 +379,9 @@ func (db *DB) loadFreelist() {
 			db.freelist.Init(db.freepages())
 		} else {
 			// Read free list from freelist page.
-			db.freelist.Read(db.page(db.meta().Freelist()))
+			p, release := db.page(db.meta().Freelist())
+			db.freelist.Read(p)
+			release()
 		}
 		if db.stats != nil {
 			db.stats.FreePageN = db.freelist.FreeCount()
@@ -413,8 +423,12 @@ func (db *DB) loadMeta() error {
 	// Validate the meta pages. We only return an error if both meta pages fail
 	// validation, since meta0 failing validation means that it wasn't saved
 	// properly -- but we can recover using meta1. And vice-versa.
-	err0 := db.page(0).Meta().Validate()
-	err1 := db.page(1).Meta().Validate()
+	p0, release0 := db.page(0)
+	err0 := p0.Meta().Validate()
+	release0()
+	p1, release1 := db.page(1)
+	err1 := p1.Meta().Validate()
+	release1()
 	if err0 != nil && err1 != nil {
 		lg.Errorf("both meta pages are invalid, meta0: %v, meta1: %v", err0, err1)
 		return err0
@@ -867,22 +881,23 @@ func (db *DB) Info() *Info {
 }
 
 // page retrieves a page reference from the data backend based on the current page size.
-func (db *DB) page(id common.Pgid) *common.Page {
+func (db *DB) page(id common.Pgid) (*common.Page, func()) {
 	pos := id * common.Pgid(db.pageSize)
-	b, err := db.data.ReadAt(int64(pos), db.pageSize)
+	b, release, err := db.data.ReadAt(int64(pos), db.pageSize)
 	if err != nil {
 		panic(fmt.Sprintf("page read at offset %d failed: %v", pos, err))
 	}
 	p := (*common.Page)(unsafe.Pointer(&b[0]))
 	// If page has overflow, re-read with full size.
-	if p.Overflow() > 0 {
-		b, err = db.data.ReadAt(int64(pos), (int(p.Overflow())+1)*db.pageSize)
+	if overflow := p.Overflow(); overflow > 0 {
+		release()
+		b, release, err = db.data.ReadAt(int64(pos), (int(overflow)+1)*db.pageSize)
 		if err != nil {
-			panic(fmt.Sprintf("page read at offset %d (overflow %d) failed: %v", pos, p.Overflow(), err))
+			panic(fmt.Sprintf("page read at offset %d (overflow %d) failed: %v", pos, overflow, err))
 		}
 		p = (*common.Page)(unsafe.Pointer(&b[0]))
 	}
-	return p
+	return p, release
 }
 
 // pageInBuffer retrieves a page reference from a given byte array based on the current page size.
@@ -897,17 +912,21 @@ func (db *DB) meta() *common.Meta {
 	// We have to return the meta with the highest txid which doesn't fail
 	// validation. Otherwise, we can cause errors when in fact the database is
 	// in a consistent state. metaA is the one with the higher txid.
-	metaA := db.page(0).Meta()
-	metaB := db.page(1).Meta()
+	p0, release0 := db.page(0)
+	metaA := *p0.Meta()
+	release0()
+	p1, release1 := db.page(1)
+	metaB := *p1.Meta()
+	release1()
 	if metaB.Txid() > metaA.Txid() {
 		metaA, metaB = metaB, metaA
 	}
 
 	// Use higher meta page if valid. Otherwise, fallback to previous, if valid.
 	if err := metaA.Validate(); err == nil {
-		return metaA
+		return &metaA
 	} else if err := metaB.Validate(); err == nil {
-		return metaB
+		return &metaB
 	}
 
 	// This should never be reached, because both meta1 and meta0 were validated

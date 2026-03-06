@@ -84,15 +84,17 @@ func (d *FileData) remap(sz int64) error {
 	return nil
 }
 
-func (d *FileData) ReadAt(off int64, n int) ([]byte, error) {
+func (d *FileData) ReadAt(off int64, n int) ([]byte, func(), error) {
 	if d.mmap == nil {
-		return nil, fmt.Errorf("filedata: no mapping")
+		return nil, nil, fmt.Errorf("filedata: no mapping")
 	}
 	end := int(off) + n
 	if off < 0 || end > len(d.mmap) {
-		return nil, fmt.Errorf("filedata: read [%d, %d) out of range [0, %d)", off, end, len(d.mmap))
+		return nil, nil, fmt.Errorf("filedata: read [%d, %d) out of range [0, %d)", off, end, len(d.mmap))
 	}
-	return d.mmap[off:end], nil
+	buf := make([]byte, n)
+	copy(buf, d.mmap[off:end])
+	return buf, func() {}, nil
 }
 
 func (d *FileData) WriteAt(b []byte, off int64) (int, error) {

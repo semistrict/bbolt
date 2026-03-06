@@ -64,14 +64,15 @@ func OpenDBWithOption(t testing.TB, f string, o *bolt.Options) (*DB, error) {
 	o.FreelistType = freelistType
 
 	readOnly := o.ReadOnly
-	data, err := bolt.OpenFileData(f, 0600, readOnly)
+	fileData, err := bolt.OpenFileData(f, 0600, readOnly)
 	if err != nil {
 		return nil, err
 	}
+	data := &bolt.DebugData{Data: fileData}
 
 	db, err := bolt.Open(data, o)
 	if err != nil {
-		data.Close()
+		fileData.Close()
 		return nil, err
 	}
 	resDB := &DB{
@@ -138,11 +139,12 @@ func (db *DB) MustReopen() {
 		panic("Please call Close() before MustReopen()")
 	}
 	db.t.Logf("Reopening bbolt DB at: %s", db.f)
-	data, err := bolt.OpenFileData(db.f, 0600, db.o.ReadOnly)
+	fileData, err := bolt.OpenFileData(db.f, 0600, db.o.ReadOnly)
 	require.NoError(db.t, err)
+	data := &bolt.DebugData{Data: fileData}
 	indb, err := bolt.Open(data, db.o)
 	if err != nil {
-		data.Close()
+		fileData.Close()
 	}
 	require.NoError(db.t, err)
 	db.DB = indb

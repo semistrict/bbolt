@@ -13,13 +13,14 @@ func openDB(path string, mode os.FileMode, opts *bolt.Options) (*bolt.DB, error)
 	if opts != nil {
 		readOnly = opts.ReadOnly
 	}
-	data, err := bolt.OpenFileData(path, mode, readOnly)
+	fileData, err := bolt.OpenFileData(path, mode, readOnly)
 	if err != nil {
 		return nil, err
 	}
+	data := &bolt.DebugData{Data: fileData}
 	db, err := bolt.Open(data, opts)
 	if err != nil {
-		data.Close()
+		fileData.Close()
 		return nil, err
 	}
 	return db, nil

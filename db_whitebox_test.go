@@ -118,13 +118,14 @@ func openPath(path string, mode os.FileMode, opts *Options) (*DB, error) {
 	if opts != nil {
 		readOnly = opts.ReadOnly
 	}
-	data, err := OpenFileData(path, mode, readOnly)
+	fileData, err := OpenFileData(path, mode, readOnly)
 	if err != nil {
 		return nil, err
 	}
+	data := &DebugData{Data: fileData}
 	db, err := Open(data, opts)
 	if err != nil {
-		data.Close()
+		fileData.Close()
 		return nil, err
 	}
 	return db, nil

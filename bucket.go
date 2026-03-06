@@ -94,6 +94,7 @@ func (b *Bucket) Bucket(name []byte) *Bucket {
 
 	// Move cursor to key.
 	c := b.Cursor()
+	defer c.Close()
 	k, v, flags := c.seek(name)
 
 	// Return nil if the key doesn't exist or it is not a bucket.
@@ -102,6 +103,7 @@ func (b *Bucket) Bucket(name []byte) *Bucket {
 	}
 
 	// Otherwise create a bucket and cache it.
+	// openBucket copies v, so the cursor can be released after.
 	var child = b.openBucket(v)
 	if b.buckets != nil {
 		b.buckets[string(name)] = child
@@ -115,27 +117,17 @@ func (b *Bucket) Bucket(name []byte) *Bucket {
 func (b *Bucket) openBucket(value []byte) *Bucket {
 	var child = newBucket(b.tx)
 
-	// Unaligned access requires a copy to be made.
-	const unalignedMask = unsafe.Alignof(struct {
-		common.InBucket
-		common.Page
-	}{}) - 1
-	unaligned := uintptr(unsafe.Pointer(&value[0]))&unalignedMask != 0
-	if unaligned {
-		value = cloneBytes(value)
-	}
+	// Always copy the value since page buffers may be released
+	// after the cursor that found this value goes out of scope.
+	value = cloneBytes(value)
 
-	// If this is a writable transaction then we need to copy the bucket entry.
-	// Read-only transactions can point directly at the mmap entry.
-	if b.tx.writable && !unaligned {
-		child.InBucket = &common.InBucket{}
-		*child.InBucket = *(*common.InBucket)(unsafe.Pointer(&value[0]))
-	} else {
-		child.InBucket = (*common.InBucket)(unsafe.Pointer(&value[0]))
-	}
+	child.InBucket = (*common.InBucket)(unsafe.Pointer(&value[0]))
 
 	// Save a reference to the inline page if the bucket is inline.
 	if child.RootPage() == 0 {
+		if len(value) <= int(common.BucketHeaderSize) {
+			panic(fmt.Sprintf("openBucket: inline bucket value too short: len=%d", len(value)))
+		}
 		child.page = (*common.Page)(unsafe.Pointer(&value[common.BucketHeaderSize]))
 	}
 
@@ -171,6 +163,7 @@ func (b *Bucket) CreateBucket(key []byte) (rb *Bucket, err error) {
 
 	// Move cursor to correct position.
 	c := b.Cursor()
+	defer c.Close()
 	k, _, flags := c.seek(newKey)
 
 	// Return an error if there is an existing key.
@@ -235,11 +228,13 @@ func (b *Bucket) CreateBucketIfNotExists(key []byte) (rb *Bucket, err error) {
 
 	// Move cursor to correct position.
 	c := b.Cursor()
+	defer c.Close()
 	k, v, flags := c.seek(newKey)
 
 	// Return an error if there is an existing non-bucket key.
 	if bytes.Equal(newKey, k) {
 		if (flags & common.BucketLeafFlag) != 0 {
+			// openBucket copies v, so the cursor can be released after.
 			var child = b.openBucket(v)
 			if b.buckets != nil {
 				b.buckets[string(newKey)] = child
@@ -292,6 +287,7 @@ func (b *Bucket) DeleteBucket(key []byte) (err error) {
 
 	// Move cursor to correct position.
 	c := b.Cursor()
+	defer c.Close()
 	k, _, flags := c.seek(newKey)
 
 	// Return an error if bucket doesn't exist or is not a bucket.
@@ -361,6 +357,7 @@ func (b *Bucket) MoveBucket(key []byte, dstBucket *Bucket) (err error) {
 
 	// Move cursor to correct position.
 	c := b.Cursor()
+	defer c.Close()
 	k, v, flags := c.seek(newKey)
 
 	// Return an error if bucket doesn't exist or is not a bucket.
@@ -380,6 +377,7 @@ func (b *Bucket) MoveBucket(key []byte, dstBucket *Bucket) (err error) {
 
 	// check whether the key already exists in the destination bucket
 	curDst := dstBucket.Cursor()
+	defer curDst.Close()
 	k, _, flags = curDst.seek(newKey)
 
 	// Return an error if there is an existing key in the destination bucket.
@@ -396,6 +394,7 @@ func (b *Bucket) MoveBucket(key []byte, dstBucket *Bucket) (err error) {
 	c.node().del(newKey)
 
 	// add te sub-bucket to the destination bucket
+	// v must be copied since the source cursor's page will be released.
 	newValue := cloneBytes(v)
 	curDst.node().put(newKey, newKey, newValue, 0, common.BucketLeafFlag)
 
@@ -412,6 +411,7 @@ func (b *Bucket) recursivelyInspect(name []byte) BucketStructure {
 
 	keyN := 0
 	c := b.Cursor()
+	defer c.Close()
 	for k, _, flags := c.first(); k != nil; k, _, flags = c.next() {
 		if flags&common.BucketLeafFlag != 0 {
 			childBucket := b.Bucket(k)
@@ -431,7 +431,9 @@ func (b *Bucket) recursivelyInspect(name []byte) BucketStructure {
 // The returned value is only valid for the life of the transaction.
 // The returned memory is owned by bbolt and must never be modified; writing to this memory might corrupt the database.
 func (b *Bucket) Get(key []byte) []byte {
-	k, v, flags := b.Cursor().seek(key)
+	c := b.Cursor()
+	defer c.Close()
+	k, v, flags := c.seek(key)
 
 	// Return nil if this is a bucket.
 	if (flags & common.BucketLeafFlag) != 0 {
@@ -442,7 +444,9 @@ func (b *Bucket) Get(key []byte) []byte {
 	if !bytes.Equal(key, k) {
 		return nil
 	}
-	return v
+
+	// Copy the value since the cursor's page buffer will be released.
+	return cloneBytes(v)
 }
 
 // Put sets the value for a key in the bucket.
@@ -479,6 +483,7 @@ func (b *Bucket) Put(key []byte, value []byte) (err error) {
 
 	// Move cursor to correct position.
 	c := b.Cursor()
+	defer c.Close()
 	k, _, flags := c.seek(newKey)
 
 	// Return an error if there is an existing key with a bucket value.
@@ -516,6 +521,7 @@ func (b *Bucket) Delete(key []byte) (err error) {
 
 	// Move cursor to correct position.
 	c := b.Cursor()
+	defer c.Close()
 	k, _, flags := c.seek(key)
 
 	// Return nil if the key doesn't exist.
@@ -587,8 +593,9 @@ func (b *Bucket) ForEach(fn func(k, v []byte) error) error {
 		return errors.ErrTxClosed
 	}
 	c := b.Cursor()
+	defer c.Close()
 	for k, v := c.First(); k != nil; k, v = c.Next() {
-		if err := fn(k, v); err != nil {
+		if err := fn(cloneBytes(k), cloneBytes(v)); err != nil {
 			return err
 		}
 	}
@@ -600,9 +607,10 @@ func (b *Bucket) ForEachBucket(fn func(k []byte) error) error {
 		return errors.ErrTxClosed
 	}
 	c := b.Cursor()
+	defer c.Close()
 	for k, _, flags := c.first(); k != nil; k, _, flags = c.next() {
 		if flags&common.BucketLeafFlag != 0 {
-			if err := fn(k); err != nil {
+			if err := fn(cloneBytes(k)); err != nil {
 				return err
 			}
 		}
@@ -716,7 +724,7 @@ func (b *Bucket) forEachPageNode(fn func(*common.Page, *node, int)) {
 }
 
 func (b *Bucket) _forEachPageNode(pgId common.Pgid, depth int, fn func(*common.Page, *node, int)) {
-	var p, n = b.pageNode(pgId)
+	var p, n, release = b.pageNode(pgId)
 
 	// Execute function.
 	fn(p, n, depth)
@@ -736,6 +744,7 @@ func (b *Bucket) _forEachPageNode(pgId common.Pgid, depth int, fn func(*common.P
 			}
 		}
 	}
+	release()
 }
 
 // spill writes all the nodes for this bucket to dirty pages.
@@ -775,6 +784,7 @@ func (b *Bucket) spill() error {
 			panic(fmt.Sprintf("unexpected bucket header flag: %x", flags))
 		}
 		c.node().put([]byte(name), []byte(name), value, 0, common.BucketLeafFlag)
+		c.Close()
 	}
 
 	// Ignore if there's not a materialized root node.
@@ -874,8 +884,9 @@ func (b *Bucket) node(pgId common.Pgid, parent *node) *node {
 
 	// Use the inline page if this is an inline bucket.
 	var p = b.page
+	var release func()
 	if p == nil {
-		p = b.tx.page(pgId)
+		p, release = b.tx.page(pgId)
 	} else {
 		// if p isn't nil, then it's an inline bucket.
 		// The pgId must be 0 in this case.
@@ -886,6 +897,9 @@ func (b *Bucket) node(pgId common.Pgid, parent *node) *node {
 
 	// Read the page into the node and cache it.
 	n.read(p)
+	if release != nil {
+		release()
+	}
 	b.nodes[pgId] = n
 
 	// Update statistics.
@@ -924,7 +938,8 @@ func (b *Bucket) dereference() {
 
 // pageNode returns the in-memory node, if it exists.
 // Otherwise, returns the underlying page.
-func (b *Bucket) pageNode(id common.Pgid) (*common.Page, *node) {
+func (b *Bucket) pageNode(id common.Pgid) (*common.Page, *node, func()) {
+	nop := func() {}
 	// Inline buckets have a fake page embedded in their value so treat them
 	// differently. We'll return the rootNode (if available) or the fake page.
 	if b.RootPage() == 0 {
@@ -932,20 +947,21 @@ func (b *Bucket) pageNode(id common.Pgid) (*common.Page, *node) {
 			panic(fmt.Sprintf("inline bucket non-zero page access(2): %d != 0", id))
 		}
 		if b.rootNode != nil {
-			return nil, b.rootNode
+			return nil, b.rootNode, nop
 		}
-		return b.page, nil
+		return b.page, nil, nop
 	}
 
 	// Check the node cache for non-inline buckets.
 	if b.nodes != nil {
 		if n := b.nodes[id]; n != nil {
-			return nil, n
+			return nil, n, nop
 		}
 	}
 
 	// Finally lookup the page from the transaction if no node is materialized.
-	return b.tx.page(id), nil
+	p, release := b.tx.page(id)
+	return p, nil, release
 }
 
 // BucketStats records statistics about resources used by a bucket.
@@ -993,7 +1009,10 @@ func (s *BucketStats) Add(other BucketStats) {
 
 // cloneBytes returns a copy of a given slice.
 func cloneBytes(v []byte) []byte {
-	var clone = make([]byte, len(v))
+	if v == nil {
+		return nil
+	}
+	clone := make([]byte, len(v))
 	copy(clone, v)
 	return clone
 }

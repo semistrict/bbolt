@@ -54,17 +54,26 @@ func ReadInodeFromPage(p *Page) Inodes {
 		if isLeaf {
 			elem := p.LeafPageElement(uint16(i))
 			inode.SetFlags(elem.Flags())
-			inode.SetKey(elem.Key())
-			inode.SetValue(elem.Value())
+			inode.SetKey(cloneBytes(elem.Key()))
+			inode.SetValue(cloneBytes(elem.Value()))
 		} else {
 			elem := p.BranchPageElement(uint16(i))
 			inode.SetPgid(elem.Pgid())
-			inode.SetKey(elem.Key())
+			inode.SetKey(cloneBytes(elem.Key()))
 		}
 		Assert(len(inode.Key()) > 0, "read: zero-length inode key")
 	}
 
 	return inodes
+}
+
+func cloneBytes(b []byte) []byte {
+	if b == nil {
+		return nil
+	}
+	c := make([]byte, len(b))
+	copy(c, b)
+	return c
 }
 
 func WriteInodeToPage(inodes Inodes, p *Page) uint32 {

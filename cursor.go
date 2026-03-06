@@ -14,7 +14,11 @@ import (
 // Cursors see nested buckets with value == nil.
 // Cursors can be obtained from a transaction and are valid as long as the transaction is open.
 //
-// Keys and values returned from the cursor are only valid for the life of the transaction.
+// Keys and values returned from the cursor are valid until the next cursor
+// movement operation (First, Last, Next, Prev, Seek). Callers must copy
+// any keys or values they need to retain.
+//
+// Cursors hold references to page buffers. Call Close when done to release them.
 //
 // Changing data while traversing with a cursor may cause it to be invalidated
 // and return unexpected keys and/or values. You must reposition your cursor
@@ -22,6 +26,22 @@ import (
 type Cursor struct {
 	bucket *Bucket
 	stack  []elemRef
+}
+
+// releaseStack releases all page buffers held by the cursor stack.
+func (c *Cursor) releaseStack() {
+	for i := range c.stack {
+		if c.stack[i].release != nil {
+			c.stack[i].release()
+			c.stack[i].release = nil
+		}
+	}
+}
+
+// Close releases all page buffers held by the cursor.
+// After closing, the cursor must not be used.
+func (c *Cursor) Close() {
+	c.releaseStack()
 }
 
 // Bucket returns the bucket that this cursor was created from.
@@ -42,9 +62,10 @@ func (c *Cursor) First() (key []byte, value []byte) {
 }
 
 func (c *Cursor) first() (key []byte, value []byte, flags uint32) {
+	c.releaseStack()
 	c.stack = c.stack[:0]
-	p, n := c.bucket.pageNode(c.bucket.RootPage())
-	c.stack = append(c.stack, elemRef{page: p, node: n, index: 0})
+	p, n, release := c.bucket.pageNode(c.bucket.RootPage())
+	c.stack = append(c.stack, elemRef{page: p, node: n, index: 0, release: release})
 	c.goToFirstElementOnTheStack()
 
 	// If we land on an empty page then move to the next value.
@@ -65,9 +86,10 @@ func (c *Cursor) first() (key []byte, value []byte, flags uint32) {
 // The returned key and value are only valid for the life of the transaction.
 func (c *Cursor) Last() (key []byte, value []byte) {
 	common.Assert(c.bucket.tx.db != nil, "tx closed")
+	c.releaseStack()
 	c.stack = c.stack[:0]
-	p, n := c.bucket.pageNode(c.bucket.RootPage())
-	ref := elemRef{page: p, node: n}
+	p, n, release := c.bucket.pageNode(c.bucket.RootPage())
+	ref := elemRef{page: p, node: n, release: release}
 	ref.index = ref.count() - 1
 	c.stack = append(c.stack, ref)
 	c.last()
@@ -158,6 +180,7 @@ func (c *Cursor) Delete() error {
 // If the key does not exist then the next key is used.
 func (c *Cursor) seek(seek []byte) (key []byte, value []byte, flags uint32) {
 	// Start from root page/node and traverse to correct page.
+	c.releaseStack()
 	c.stack = c.stack[:0]
 	c.search(seek, c.bucket.RootPage())
 
@@ -181,8 +204,8 @@ func (c *Cursor) goToFirstElementOnTheStack() {
 		} else {
 			pgId = ref.page.BranchPageElement(uint16(ref.index)).Pgid()
 		}
-		p, n := c.bucket.pageNode(pgId)
-		c.stack = append(c.stack, elemRef{page: p, node: n, index: 0})
+		p, n, release := c.bucket.pageNode(pgId)
+		c.stack = append(c.stack, elemRef{page: p, node: n, index: 0, release: release})
 	}
 }
 
@@ -202,9 +225,9 @@ func (c *Cursor) last() {
 		} else {
 			pgId = ref.page.BranchPageElement(uint16(ref.index)).Pgid()
 		}
-		p, n := c.bucket.pageNode(pgId)
+		p, n, release := c.bucket.pageNode(pgId)
 
-		var nextRef = elemRef{page: p, node: n}
+		var nextRef = elemRef{page: p, node: n, release: release}
 		nextRef.index = nextRef.count() - 1
 		c.stack = append(c.stack, nextRef)
 	}
@@ -233,6 +256,13 @@ func (c *Cursor) next() (key []byte, value []byte, flags uint32) {
 
 		// Otherwise start from where we left off in the stack and find the
 		// first element of the first leaf page.
+		// Release pages for popped stack entries.
+		for j := i + 1; j < len(c.stack); j++ {
+			if c.stack[j].release != nil {
+				c.stack[j].release()
+				c.stack[j].release = nil
+			}
+		}
 		c.stack = c.stack[:i+1]
 		c.goToFirstElementOnTheStack()
 
@@ -266,6 +296,10 @@ func (c *Cursor) prev() (key []byte, value []byte, flags uint32) {
 			c.first()
 			return nil, nil, 0
 		}
+		if c.stack[i].release != nil {
+			c.stack[i].release()
+			c.stack[i].release = nil
+		}
 		c.stack = c.stack[:i]
 	}
 
@@ -281,11 +315,11 @@ func (c *Cursor) prev() (key []byte, value []byte, flags uint32) {
 
 // search recursively performs a binary search against a given page/node until it finds a given key.
 func (c *Cursor) search(key []byte, pgId common.Pgid) {
-	p, n := c.bucket.pageNode(pgId)
+	p, n, release := c.bucket.pageNode(pgId)
 	if p != nil && !p.IsBranchPage() && !p.IsLeafPage() {
 		panic(fmt.Sprintf("invalid page type: %d: %x", p.Id(), p.Flags()))
 	}
-	e := elemRef{page: p, node: n}
+	e := elemRef{page: p, node: n, release: release}
 	c.stack = append(c.stack, e)
 
 	// If we're on a leaf page/node then find the specific node.
@@ -410,9 +444,10 @@ func (c *Cursor) node() *node {
 
 // elemRef represents a reference to an element on a given page/node.
 type elemRef struct {
-	page  *common.Page
-	node  *node
-	index int
+	page    *common.Page
+	node    *node
+	index   int
+	release func() // releases the underlying page buffer
 }
 
 // isLeaf returns whether the ref is pointing at a leaf page/node.

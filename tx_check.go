@@ -52,11 +52,23 @@ func (tx *Tx) check(cfg checkConfig, ch chan error) {
 
 	// Track every reachable page.
 	reachable := make(map[common.Pgid]*common.Page)
-	reachable[0] = tx.page(0) // meta0
-	reachable[1] = tx.page(1) // meta1
+	var releases []func()
+	defer func() {
+		for _, r := range releases {
+			r()
+		}
+	}()
+	p0, r0 := tx.page(0)
+	reachable[0] = p0
+	releases = append(releases, r0)
+	p1, r1 := tx.page(1)
+	reachable[1] = p1
+	releases = append(releases, r1)
 	if tx.meta.Freelist() != common.PgidNoFreelist {
-		for i := uint32(0); i <= tx.page(tx.meta.Freelist()).Overflow(); i++ {
-			reachable[tx.meta.Freelist()+common.Pgid(i)] = tx.page(tx.meta.Freelist())
+		fp, fr := tx.page(tx.meta.Freelist())
+		releases = append(releases, fr)
+		for i := uint32(0); i <= fp.Overflow(); i++ {
+			reachable[tx.meta.Freelist()+common.Pgid(i)] = fp
 		}
 	}
 
@@ -91,7 +103,8 @@ func (tx *Tx) recursivelyCheckPage(pageId common.Pgid, reachable map[common.Pgid
 
 func (tx *Tx) recursivelyCheckBucketInPage(pageId common.Pgid, reachable map[common.Pgid]*common.Page, freed map[common.Pgid]bool,
 	kvStringer KVStringer, ch chan error) {
-	p := tx.page(pageId)
+	p, release := tx.page(pageId)
+	defer release()
 
 	switch {
 	case p.IsBranchPage():
@@ -186,7 +199,8 @@ func (tx *Tx) recursivelyCheckPageKeyOrderInternal(
 	pgId common.Pgid, minKeyClosed, maxKeyOpen []byte, pagesStack []common.Pgid,
 	keyToString func([]byte) string, ch chan error) (maxKeyInSubtree []byte) {
 
-	p := tx.page(pgId)
+	p, release := tx.page(pgId)
+	defer release()
 	pagesStack = append(pagesStack, pgId)
 	switch {
 	case p.IsBranchPage():
@@ -212,7 +226,8 @@ func (tx *Tx) recursivelyCheckPageKeyOrderInternal(
 			runningMin = elem.Key()
 		}
 		if p.Count() > 0 {
-			return p.LeafPageElement(p.Count() - 1).Key()
+			// Copy the key since defer release() will zero the page buffer.
+			return cloneBytes(p.LeafPageElement(p.Count() - 1).Key())
 		}
 	default:
 		ch <- fmt.Errorf("unexpected page type (flags: %x) for pgId:%d", p.Flags(), pgId)

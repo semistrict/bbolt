@@ -212,7 +212,9 @@ func (tx *Tx) Commit() (err error) {
 
 	// Free the old freelist because commit writes out a fresh freelist.
 	if tx.meta.Freelist() != common.PgidNoFreelist {
-		tx.db.freelist.Free(tx.meta.Txid(), tx.db.page(tx.meta.Freelist()))
+		p, release := tx.db.page(tx.meta.Freelist())
+		tx.db.freelist.Free(tx.meta.Txid(), p)
+		release()
 	}
 
 	if !tx.db.NoFreelistSync {
@@ -334,7 +336,9 @@ func (tx *Tx) rollback() {
 				tx.db.freelist.NoSyncReload(tx.db.freepages())
 			} else {
 				// Read free page list from freelist page.
-				tx.db.freelist.Reload(tx.db.page(tx.db.meta().Freelist()))
+				p, release := tx.db.page(tx.db.meta().Freelist())
+				tx.db.freelist.Reload(p)
+				release()
 			}
 		}
 	}
@@ -423,11 +427,12 @@ func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
 		if readLen > remaining {
 			readLen = remaining
 		}
-		b, readErr := tx.db.data.ReadAt(off, readLen)
+		b, release, readErr := tx.db.data.ReadAt(off, readLen)
 		if readErr != nil {
 			return n, readErr
 		}
 		nn, err = w.Write(b)
+		release()
 		n += int64(nn)
 		if err != nil {
 			return n, err
@@ -584,19 +589,20 @@ func (tx *Tx) writeMeta() error {
 
 // page returns a reference to the page with a given id.
 // If page has been written to then a temporary buffered page is returned.
-func (tx *Tx) page(id common.Pgid) *common.Page {
+// The caller must call the returned release function when done with the page.
+func (tx *Tx) page(id common.Pgid) (*common.Page, func()) {
 	// Check the dirty pages first.
 	if tx.pages != nil {
 		if p, ok := tx.pages[id]; ok {
 			p.FastCheck(id)
-			return p
+			return p, func() {} // dirty pages are owned by the tx
 		}
 	}
 
-	// Otherwise return directly from the mmap.
-	p := tx.db.page(id)
+	// Otherwise read from the data backend.
+	p, release := tx.db.page(id)
 	p.FastCheck(id)
-	return p
+	return p, release
 }
 
 // forEachPage iterates over every page within a given page and executes a function.
@@ -607,7 +613,7 @@ func (tx *Tx) forEachPage(pgidnum common.Pgid, fn func(*common.Page, int, []comm
 }
 
 func (tx *Tx) forEachPageInternal(pgidstack []common.Pgid, fn func(*common.Page, int, []common.Pgid)) {
-	p := tx.page(pgidstack[len(pgidstack)-1])
+	p, release := tx.page(pgidstack[len(pgidstack)-1])
 
 	// Execute function.
 	fn(p, len(pgidstack)-1, pgidstack)
@@ -619,6 +625,7 @@ func (tx *Tx) forEachPageInternal(pgidstack []common.Pgid, fn func(*common.Page,
 			tx.forEachPageInternal(append(pgidstack, elem.Pgid()), fn)
 		}
 	}
+	release()
 }
 
 // Page returns page information for a given page number.
@@ -635,7 +642,7 @@ func (tx *Tx) Page(id int) (*common.PageInfo, error) {
 	}
 
 	// Build the page info.
-	p := tx.db.page(common.Pgid(id))
+	p, release := tx.db.page(common.Pgid(id))
 	info := &common.PageInfo{
 		ID:            id,
 		Count:         int(p.Count()),
@@ -648,6 +655,7 @@ func (tx *Tx) Page(id int) (*common.PageInfo, error) {
 	} else {
 		info.Type = p.Typ()
 	}
+	release()
 
 	return info, nil
 }
