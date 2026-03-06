@@ -14,8 +14,22 @@ func (d *DebugData) ReadAt(off int64, n int) ([]byte, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return buf, func() {
+	// Allocate a larger backing buffer with a poison pattern before and
+	// after the requested data.  Any code that reads past the returned
+	// slice (e.g. via unsafe pointer arithmetic into a stale page) will
+	// hit 0x67 bytes instead of valid data, making the bug obvious.
+	const poisonLen = 256
+	full := make([]byte, poisonLen+n+poisonLen)
+	for i := 0; i < poisonLen; i++ {
+		full[i] = 0x67
+	}
+	copy(full[poisonLen:], buf)
+	for i := poisonLen + n; i < len(full); i++ {
+		full[i] = 0x67
+	}
+	result := full[poisonLen : poisonLen+n : poisonLen+n]
+	return result, func() {
 		release()
-		go clear(buf)
+		go clear(full)
 	}, nil
 }
